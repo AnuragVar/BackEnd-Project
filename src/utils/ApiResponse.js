@@ -6,6 +6,8 @@ class ApiResponse {
   }
 }
 
+export default ApiResponse;
+
 //mainly informational response (100-199)
 //successfull res (200-299)
 //redirection mess(300-399);
