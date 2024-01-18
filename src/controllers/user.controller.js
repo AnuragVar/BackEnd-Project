@@ -1,9 +1,145 @@
 import { asyncHandler } from "../utils/asyncHandler.js";
 import ApiError from "../utils/ApiError.js";
-import { User } from "../models/user.models.js";
+import { User } from "../models/user.model.js";
 import { uploadOnCloudinary } from "../utils/cloudinary.js";
 import ApiResponse from "../utils/ApiResponse.js";
 import jwt from "jsonwebtoken";
+
+const getUserChannelProfile = asyncHandler(async (req, res) => {
+  const { userName } = req.params;
+
+  if (!userName?.trim()) {
+    throw new ApiError(400, "username is missing");
+  }
+
+  const channel = await User.aggregate([
+    {
+      $match: {
+        userName: userName?.toLowerCase(),
+      },
+    },
+    {
+      //here subcriptions because models in mongoDB are in plural form
+      $lookup: {
+        from: "subcriptions",
+        localField: "_id",
+        foreignField: "subscriber",
+        as: "subscribedTo",
+      },
+    },
+    {
+      $lookup: {
+        from: "subcriptions",
+        localField: "_id",
+        foreignField: "channel",
+        as: "subscribers",
+      },
+    },
+    {
+      $addFields: {
+        subscribersCount: {
+          $size: "$subscibers",
+        },
+        channelsSubscribedToCount: {
+          $size: "$subscribedTo",
+        },
+        //$
+        // $cond checks for condition
+        // $addFields add fields to the database
+        // $in can check in both array and object
+        // $lookup to combine documents from different collections based on a common field. // it is left outer join
+        // $match to filter document,to include or exclude documents from the subsequent stages
+        // $size to get the size of array
+
+        isSubscribed: {
+          $cond: {
+            if: { $in: [req.user?._id, "$subscribers.subscriber"] },
+            then: true,
+            else: false,
+          },
+        },
+      },
+    },
+    {
+      $project: {
+        fullName: 1,
+        userName: 1,
+        subscribersCount: 1,
+        channelsSubscribedToCount: 1,
+        subscribersCount: 1,
+        isSubscribed: 1,
+        avatar: 1,
+        coverImage: 1,
+        email: 1,
+        //1 means you are projecting these values
+      },
+    },
+  ]);
+
+  if (!channel?.length) {
+    throw new ApiError(404, "channel doesn't exist");
+  }
+  return res
+    .status(200)
+    .json(new ApiResponse(200, "channel data fetched successfully"));
+});
+
+const getWatchHistory = asyncHandler(async (req, res) => {
+  const user = await User.aggregate([
+    {
+      //by matching the userid we got user from usercollection
+      $match: {
+        _id: new mongoose.Types.ObjectId(req.user._id),
+      },
+    },
+    {
+      //here we need to get videos given in watchHistory
+      $lookup: {
+        from: "videos",
+        localField: "watchHistory",
+        foreignField: "_id",
+        as: "watchHistory",
+        //in this pipeline we are in video
+        pipeline: [
+          {
+            $lookup: {
+              from: "users",
+              localField: "owner",
+              foreignField: "_id",
+              as: "owner",
+              pipeline: [
+                {
+                  //we want to project to take only few things from user
+                  $project: {
+                    fullName: 1,
+                    userName: 1,
+                    avatar: 1,
+                  },
+                },
+              ],
+            },
+          },
+          {
+            $addFields: {
+              owner: {
+                $first: "$owner",
+              },
+            },
+          },
+        ],
+      },
+    },
+  ]);
+  res
+    .status(200)
+    .json(
+      new ApiResponse(
+        200,
+        user[0].watchHistory,
+        "watch history fetched successfully"
+      )
+    );
+});
 
 const generateAccessAndRefereshTokens = async (userId) => {
   try {
@@ -237,74 +373,103 @@ const refreshAccessToken = asyncHandler(async (req, res) => {
   }
 });
 
-const changeCurrentPassword = asyncHandler( async(req,res) =>{
-  const {oldPassword,newPassword,confirmPassword} = req.body,
-  if(newPassword!==confirmPassword) throw new ApiError(400,"newPassword and confirmPassword doesn't matches");
+const changeCurrentPassword = asyncHandler(async (req, res) => {
+  const { oldPassword, newPassword, confirmPassword } = req.body;
+  if (newPassword !== confirmPassword)
+    throw new ApiError(400, "newPassword and confirmPassword doesn't matches");
 
   const user = User.findById(req.user._id);
 
   const isPasswordCorrect = user.isPasswordCorrect(oldPassword);
-  if(!isPasswordCorrect) throw new ApiError(400,"Invalid Password");
+  if (!isPasswordCorrect) throw new ApiError(400, "Invalid Password");
 
   user.password = newPassword;
-  user.save({validateBeforeSave: false});
-  res.status(200)
-  .json(new ApiResponse(
-    200,{},"Password changed successfully"
-  ))
-})
-
-const updateAccountDetails = asyncHandler( async(req,res) => {
-  const {userName,email} = req.body;
-  if(!userName && !email) throw new ApiError(400,'no input fields');
-
-  const user = User.findByIdAndUpdate(req.user?._id,{
-   $set: { userName,email}
-  },{new : true}).select("-password");
-
-  res.status(200)
-  .json(new ApiResponse(200,{user},"user updated successfully"));
+  user.save({ validateBeforeSave: false });
+  res
+    .status(200)
+    .json(new ApiResponse(200, {}, "Password changed successfully"));
 });
 
-const currentUser = asyncHandler ( async(req,res)=>{
-  return res.status(200).json( new ApiResponse(200,req.user,"current user sent successfully"));
-})
+const updateAccountDetails = asyncHandler(async (req, res) => {
+  const { userName, email } = req.body;
+  if (!userName && !email) throw new ApiError(400, "no input fields");
 
-//two middlewares will be needed 
-const updateUserAvatar = asyncHandler(async(req,res)=>{
-  const avatarLocalPath = req.files?.avatar[0]?.path;
-  if(!avatarLocalPath) throw new ApiError(400,"No avatar found!!");
+  const user = User.findByIdAndUpdate(
+    req.user?._id,
+    {
+      $set: { userName, email },
+    },
+    { new: true }
+  ).select("-password");
 
-  const avatar = await uploadOnCloudinary(avatarLocalPath)
+  res
+    .status(200)
+    .json(new ApiResponse(200, { user }, "user updated successfully"));
+});
 
-  if(!avatar.url) throw new ApiError(500,"Error while uploading avatar")
+const currentUser = asyncHandler(async (req, res) => {
+  return res
+    .status(200)
+    .json(new ApiResponse(200, req.user, "current user sent successfully"));
+});
 
-  const user = User.findByIdAndUpdate(user._id,{
-   $set: { avatar: avatar.url}
-  },{new:true}).select("-password");
-    
+//two middlewares will be needed multer + auth
+const updateUserAvatar = asyncHandler(async (req, res) => {
+  console.log(req.file);
+  const avatarLocalPath = req.file?.path;
+  if (!avatarLocalPath) throw new ApiError(400, "No avatar found!!");
 
-  res.status(200).json(
-    new ApiResponse(200,user,"avatar is updated successfully")
-  );
-})
-const updateUserCoverImage = asyncHandler(async(req,res)=>{
+  const avatar = await uploadOnCloudinary(avatarLocalPath);
+  console.log(avatar);
+  if (!avatar.url) throw new ApiError(500, "Error while uploading avatar");
+
+  const user = await User.findByIdAndUpdate(
+    req.user._id,
+    {
+      $set: { avatar: avatar.url },
+    },
+    { new: true }
+  ).select("-password -refreshToken");
+
+  res
+    .status(200)
+    .json(new ApiResponse(200, user, "avatar is updated successfully"));
+});
+//two middlewares will be needed
+const updateUserCoverImage = asyncHandler(async (req, res) => {
   const coverImageLocalPath = req.file?.path;
+  console.log(req.file);
   //HERE FILE ONLY BECAUSE HERE PERSON WILL UPLOAD ONLY COVERIMAGE WHILE IN THAT CASE WE HAD TWO DATA
-  if(!coverImageLocalPath) throw new ApiError(400,"No coverImage found!!");
+  if (!coverImageLocalPath) throw new ApiError(400, "No coverImage found!!");
 
-  const coverImage = await uploadOnCloudinary(coverImageLocalPath)
+  const coverImage = await uploadOnCloudinary(coverImageLocalPath);
 
-  if(!coverImage.url) throw new ApiError(500,"Error while uploading coverImage")
+  if (!coverImage.url)
+    throw new ApiError(500, "Error while uploading coverImage");
 
-  const user = User.findByIdAndUpdate(user._id,{
-   $set: { coverImage: coverImage.url}
-  },{new:true}).select("-password");
-    
+  const user = await User.findByIdAndUpdate(
+    req.user._id,
+    {
+      $set: { coverImage: coverImage.url },
+    },
+    { new: true }
+  ).select("-password -refreshToken");
 
-  res.status(200).json(
-    new ApiResponse(200,user,"coverImage is updated successfully")
-  );
-})
+  res
+    .status(200)
+    .json(new ApiResponse(200, user, "coverImage is updated successfully"));
+});
 //files data should updated by different endPoints, it will reduce the server load
-export { registerUser, loginUser, logoutUser, refreshAccessToken ,changeCurrentPassword};
+export {
+  registerUser,
+  loginUser,
+  logoutUser,
+  refreshAccessToken,
+  changeCurrentPassword,
+  currentUser,
+  updateAccountDetails,
+  updateUserAvatar,
+  updateUserCoverImage,
+  getUserChannelProfile,
+  getWatchHistory,
+};
